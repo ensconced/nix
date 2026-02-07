@@ -1,0 +1,9 @@
+[user]
+email=joebarnett876@gmail.com
+
+[push]
+autoSetupRemote=true
+
+[commit]
+verbose=true
+

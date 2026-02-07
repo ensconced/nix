@@ -1,0 +1,4 @@
+# This .ignore file is used by ripgrep, which itself is used by the mini.pick nvim plugin
+.git
+.direnv
+

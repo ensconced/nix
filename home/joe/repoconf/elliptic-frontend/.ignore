@@ -1,0 +1,3 @@
+# This ignore file is used by ripgrep
+.git
+

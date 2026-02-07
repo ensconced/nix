@@ -1,0 +1,16 @@
+[user]
+email=joe.barnett@elliptic.co
+
+[push]
+autoSetupRemote=true
+
+[commit]
+verbose=true
+
+[merge]
+    tool = nvimdiff
+
+[mergetool "nvimdiff"]
+    cmd = nvim -d \"$LOCAL\" \"$MERGED\" \"$REMOTE\" -c \"wincmd w\"
+    trustExitCode = true
+
