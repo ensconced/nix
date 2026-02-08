@@ -27,7 +27,7 @@ in
     target = "./.config/fish/completions/fnm.fish";
   };
   home.file.fnm-config = {
-    text = "fnm env --use-on-cd --version-file-strategy=recursive --shell fish | source";
+    text = "fnm env --use-on-cd --version-file-strategy=recursive --shell fish --corepack-enabled | source";
     target = "./.config/fish/conf.d/fnm.fish";
   };
   home.file.ssh-config = {
