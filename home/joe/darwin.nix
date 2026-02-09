@@ -77,6 +77,10 @@ in
     text = "${builtins.readFile ./eu-west-1-bundle.pem}";
     target = "./.postgres-root-certs.crl";
   };
+  home.file.zshrc = {
+    text = "# empty zshrc - mostly for cursors benefit - we have a rule in elliptic-frontend that tells it to source this";
+    target = "./.zshrc";
+  };
   home.file.kubeconfig-base = {
     source = ./kubeconfig-base.yml;
     target = "./.kube/base-config";
