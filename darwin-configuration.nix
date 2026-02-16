@@ -26,7 +26,6 @@
   homebrew.brews = [ ];
   homebrew.casks = [
     "ghostty"
-    # "karabiner-elements"
     "zoom"
     "slack"
     "rectangle"
