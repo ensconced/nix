@@ -65,4 +65,5 @@
     cd ~/notes
     vi todos.md
   '')
+  (pkgs.writeShellScriptBin "ecrpull" (builtins.readFile ./scripts/ecrpull))
 ]

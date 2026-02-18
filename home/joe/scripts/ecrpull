@@ -1,0 +1,55 @@
+#
+# ecrpull - Log in to AWS ECR (using AWS SSO profiles) and pull an image
+#
+# Usage:
+#   ecrpull <image> [tag] [profile]
+#
+# Defaults:
+#   tag: latest
+#   profile: elliptic-platform
+#
+# Examples:
+#   ecrpull forensics-backend
+#   ecrpull forensics-backend e7b5fdc5 elliptic-production
+#
+set -euo pipefail
+
+IMAGE_NAME="${1:-}"
+TAG="${2:-latest}"
+PROFILE="${3:-elliptic-platform}"
+REGION="eu-west-1"
+
+if [[ -z "$IMAGE_NAME" ]]; then
+  echo "Usage: $(basename "$0") <image> [tag] [profile]"
+  exit 1
+fi
+
+echo "Using AWS CLI profile '${PROFILE}' in region '${REGION}'"
+
+# --- ensure we're logged in with SSO ---
+echo "Ensuring SSO session is active..."
+if ! aws sts get-caller-identity --profile "${PROFILE}" >/dev/null 2>&1; then
+  echo "No active SSO session. Launching AWS SSO login..."
+  aws sso login --profile "${PROFILE}"
+fi
+
+# --- get AWS account ID ---
+ACCOUNT_ID=$(aws sts get-caller-identity \
+  --query Account \
+  --output text \
+  --profile "${PROFILE}") || {
+  echo "Failed to get AWS account ID - check your AWS SSO profile ('${PROFILE}')"
+  exit 1
+}
+
+REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${TAG}"
+
+echo "Logging in to: ${REGISTRY}"
+aws ecr get-login-password --region "${REGION}" --profile "${PROFILE}" \
+  | docker login --username AWS --password-stdin "${REGISTRY}"
+
+echo "Pulling image: ${FULL_IMAGE}"
+docker pull "${FULL_IMAGE}"
+
+echo "Successfully pulled ${FULL_IMAGE}"
