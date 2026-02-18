@@ -20,6 +20,7 @@
       pkgs.pnpm_9
       pkgs.ripgrep
       pkgs.fd
+      pkgs.graphviz
       pkgsUnstable.postgresql_18 # for psql
       pkgsCursorCli.cursor-cli # for cursor-agent
       pkgsUnstable.awscli2
