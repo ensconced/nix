@@ -1,0 +1,4 @@
+set -eu
+mkdir -p ~/notes
+cd ~/notes
+nvim todos.md

@@ -1,0 +1,44 @@
+# find config files for this repo and add symlinks to them
+set -eu
+
+add_to_personal_gitignore() {
+  gitignore_pattern="/$1"
+  if grep -Fxq "$gitignore_pattern" .git/info/exclude; then
+    echo "$gitignore_pattern" is already in .git/info/exclude
+  else
+    echo adding "$gitignore_pattern" to .git/info/exclude
+    echo "$gitignore_pattern" >> .git/info/exclude
+  fi
+}
+
+reponame=$(basename $(pwd))
+confdir=~/.repoconf/"$reponame"
+echo confdir is $confdir
+pushd "$confdir" > /dev/null
+
+nix_dir=~/repos/nix
+if ! [ -d "$nix_dir" ]; then
+  echo "nix repo not present at $nix_dir"
+  exit 1
+fi
+
+# get files without leading ./
+files=$(find . -type f -printf '%P\n')
+
+popd > /dev/null
+for file in $files; do
+  if [ "$file" != "flake.nix" ] && [ "$file" != "flake.lock" ]; then
+    symlink_dest="$confdir/$file"
+    echo symlinking $file to $symlink_dest
+    ln -sf "$symlink_dest" "$file"
+    add_to_personal_gitignore "$file"
+  fi
+done 
+
+repo_conf_dir="$nix_dir/home/joe/repoconf/$reponame"
+if [ -f "$repo_conf_dir/flake.nix" ]; then
+  echo "use flake $repo_conf_dir" > .envrc
+  add_to_personal_gitignore .envrc
+  add_to_personal_gitignore .direnv
+  direnv allow
+fi

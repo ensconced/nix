@@ -2,26 +2,30 @@
 # ecrpull - Log in to AWS ECR (using AWS SSO profiles) and pull an image
 #
 # Usage:
-#   ecrpull <image> [tag] [profile]
+#   ecrpull [profile] <image>
 #
 # Defaults:
-#   tag: latest
 #   profile: elliptic-platform
 #
 # Examples:
-#   ecrpull forensics-backend
-#   ecrpull forensics-backend e7b5fdc5 elliptic-production
+#   ecrpull elliptic-production 857171469024.dkr.ecr.eu-west-1.amazonaws.com/forensics-api-prod-lambdas:957eb81e70a1be6320aadae0356a8c2c7ecb6e4a
 #
 set -euo pipefail
 
-IMAGE_NAME="${1:-}"
-TAG="${2:-latest}"
-PROFILE="${3:-elliptic-platform}"
-REGION="eu-west-1"
+PROFILE="${1:-elliptic-platform}"
+IMAGE="${2:-}"
+DEFAULT_REGION="eu-west-1"
 
-if [[ -z "$IMAGE_NAME" ]]; then
-  echo "Usage: $(basename "$0") <image> [tag] [profile]"
+if [[ -z "$IMAGE" ]]; then
+  echo "Usage: $(basename "$0") [profile] <image>"
   exit 1
+fi
+
+REGISTRY="${IMAGE%%/*}"
+REGION="${REGISTRY#*.dkr.ecr.}"
+REGION="${REGION%%.amazonaws.com}"
+if [[ -z "$REGION" || "$REGION" == "$REGISTRY" ]]; then
+  REGION="${DEFAULT_REGION}"
 fi
 
 echo "Using AWS CLI profile '${PROFILE}' in region '${REGION}'"
@@ -42,14 +46,11 @@ ACCOUNT_ID=$(aws sts get-caller-identity \
   exit 1
 }
 
-REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
-FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${TAG}"
-
 echo "Logging in to: ${REGISTRY}"
 aws ecr get-login-password --region "${REGION}" --profile "${PROFILE}" \
   | docker login --username AWS --password-stdin "${REGISTRY}"
 
-echo "Pulling image: ${FULL_IMAGE}"
-docker pull "${FULL_IMAGE}"
+echo "Pulling image: ${IMAGE}"
+docker pull "${IMAGE}"
 
-echo "Successfully pulled ${FULL_IMAGE}"
+echo "Successfully pulled ${IMAGE}"

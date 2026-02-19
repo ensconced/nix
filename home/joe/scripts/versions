@@ -1,0 +1,2 @@
+# show location and version of each instance of an installed package. usage: `versions react`
+find . -name package.json -regex ".*/node_modules/$1/package.json" -exec echo -n {} " " ';' -exec jq --raw-output .version {} ';'
