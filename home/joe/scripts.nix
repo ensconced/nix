@@ -68,6 +68,20 @@
   (pkgs.writeShellScriptBin "ecrpull" (builtins.readFile ./scripts/ecrpull))
   (pkgs.writeShellScriptBin "epicdeps" ''
     set -eu
+    export MERMAID_CLI=${pkgs.mermaid-cli}/bin/mmdc
+    export PUPPETEER_SKIP_DOWNLOAD=true
+    if [ -z "''${PUPPETEER_EXECUTABLE_PATH:-}" ]; then
+      for chrome_path in \
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+        "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" \
+        "/Applications/Chromium.app/Contents/MacOS/Chromium"
+      do
+        if [ -x "$chrome_path" ]; then
+          export PUPPETEER_EXECUTABLE_PATH="$chrome_path"
+          break
+        fi
+      done
+    fi
     exec ${pkgsUnstable.nodejs_25}/bin/node ${./scripts/epicdeps} "$@"
   '')
 ]

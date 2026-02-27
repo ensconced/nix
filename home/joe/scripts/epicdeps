@@ -21,12 +21,20 @@
 "use strict";
 
 const fs = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
 const DEFAULT_JIRA_BASE_URL = "https://elliptic.atlassian.net";
+const DEFAULT_JIRA_EMAIL = "joe.barnett@elliptic.co";
+const execFileAsync = promisify(execFile);
+const VALID_FORMATS = new Set(["markdown", "mermaid", "svg"]);
 
 function parseArgs(argv) {
   const args = {
     epicKey: null,
     output: null,
+    format: "markdown",
     help: false,
   };
 
@@ -45,6 +53,20 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "-f" || arg === "--format") {
+      const next = argv[i + 1];
+      if (!next) {
+        throw new Error("Missing value for --format");
+      }
+      if (!VALID_FORMATS.has(next)) {
+        throw new Error(
+          `Invalid --format value: ${next}. Expected one of: markdown, mermaid, svg`
+        );
+      }
+      args.format = next;
+      i += 1;
+      continue;
+    }
     if (!args.epicKey) {
       args.epicKey = arg;
       continue;
@@ -57,31 +79,33 @@ function parseArgs(argv) {
 
 function usage() {
   return `Usage:
-  epicdeps <EPIC_KEY> [--output <file>]
+  epicdeps <EPIC_KEY> [--output <file>] [--format <markdown|mermaid|svg>]
 
 Jira instance:
   Default: ${DEFAULT_JIRA_BASE_URL}
   Optional override: JIRA_BASE_URL
 
-Authentication (choose one):
-  1) JIRA_EMAIL + JIRA_TOKEN      (Atlassian API token via Basic auth)
-  2) JIRA_TOKEN                   Used as Bearer token if JIRA_EMAIL is not set
+Authentication:
+  JIRA_TOKEN required.
+  Uses Basic auth with default email ${DEFAULT_JIRA_EMAIL}.
+  Optional override: JIRA_EMAIL
+
+Output:
+  Default format: markdown (fenced Mermaid block)
+  Raw Mermaid: --format mermaid
+  SVG: --format svg
 `;
 }
 
 function getAuthHeader() {
   const token = process.env.JIRA_TOKEN;
-  const email = process.env.JIRA_EMAIL;
+  const email = process.env.JIRA_EMAIL || DEFAULT_JIRA_EMAIL;
   if (!token) {
     throw new Error("Missing Jira auth. Set JIRA_TOKEN.");
   }
 
-  if (email) {
-    const basic = Buffer.from(`${email}:${token}`, "utf8").toString("base64");
-    return `Basic ${basic}`;
-  }
-
-  return `Bearer ${token}`;
+  const basic = Buffer.from(`${email}:${token}`, "utf8").toString("base64");
+  return `Basic ${basic}`;
 }
 
 function normalizeBaseUrl(rawBaseUrl) {
@@ -115,7 +139,7 @@ async function jiraRequest(baseUrl, authHeader, path, params = {}) {
 
 async function fetchIssue(baseUrl, authHeader, issueKey) {
   return jiraRequest(baseUrl, authHeader, `/rest/api/3/issue/${issueKey}`, {
-    fields: "key,summary,issuetype",
+    fields: "key,summary,issuetype,status,resolution",
   });
 }
 
@@ -125,7 +149,7 @@ async function searchAllIssues(baseUrl, authHeader, jql, fields) {
   const maxResults = 100;
 
   while (true) {
-    const result = await jiraRequest(baseUrl, authHeader, "/rest/api/3/search", {
+    const result = await jiraRequest(baseUrl, authHeader, "/rest/api/3/search/jql", {
       jql,
       fields: fields.join(","),
       startAt,
@@ -145,7 +169,15 @@ async function searchAllIssues(baseUrl, authHeader, jql, fields) {
 }
 
 async function tryFindEpicChildren(baseUrl, authHeader, epicKey) {
-  const fields = ["key", "summary", "issuetype", "issuelinks", "parent"];
+  const fields = [
+    "key",
+    "summary",
+    "issuetype",
+    "issuelinks",
+    "parent",
+    "status",
+    "resolution",
+  ];
   const queries = [
     `parentEpic = ${epicKey}`,
     `"Epic Link" = ${epicKey}`,
@@ -181,9 +213,27 @@ function toNodeId(issueKey) {
 
 function sanitizeLabel(text) {
   return String(text || "")
-    .replace(/"/g, '\\"')
+    // Mermaid node labels are brittle with escaped double quotes.
+    .replace(/"/g, "'")
     .replace(/\r?\n/g, " ")
     .trim();
+}
+
+function isNotRequired(issue) {
+  const statusName = String(issue.fields?.status?.name || "").toLowerCase();
+  const resolutionName = String(issue.fields?.resolution?.name || "").toLowerCase();
+  return statusName === "not required" || resolutionName === "not required";
+}
+
+function statusClass(issue) {
+  const statusCategory = String(issue.fields?.status?.statusCategory?.name || "").toLowerCase();
+  if (statusCategory === "done") {
+    return "done";
+  }
+  if (statusCategory === "in progress") {
+    return "inProgress";
+  }
+  return null;
 }
 
 function buildDependencyEdges(childIssues) {
@@ -200,7 +250,8 @@ function buildDependencyEdges(childIssues) {
         const id = `${current}->${outwardIssue}`;
         if (!seen.has(id)) {
           seen.add(id);
-          edges.push({ from: current, to: outwardIssue, label: "blocks" });
+          // Store as "is blocked by": blocked -> blocker.
+          edges.push({ from: outwardIssue, to: current });
         }
       }
 
@@ -209,7 +260,8 @@ function buildDependencyEdges(childIssues) {
         const id = `${inwardIssue}->${current}`;
         if (!seen.has(id)) {
           seen.add(id);
-          edges.push({ from: inwardIssue, to: current, label: "blocks" });
+          // Store as "is blocked by": blocked -> blocker.
+          edges.push({ from: current, to: inwardIssue });
         }
       }
     }
@@ -220,25 +272,65 @@ function buildDependencyEdges(childIssues) {
 
 function toMermaid(epicKey, childIssues, edges) {
   const lines = [];
-  lines.push("graph TD");
+  lines.push("graph BT");
   lines.push(`  %% Epic ${epicKey} child dependency map`);
 
   for (const issue of childIssues) {
     const nodeId = toNodeId(issue.key);
     const summary = sanitizeLabel(issue.fields?.summary || "");
     lines.push(`  ${nodeId}["${issue.key}: ${summary}"]`);
+    const cls = statusClass(issue);
+    if (cls) {
+      lines.push(`  class ${nodeId} ${cls}`);
+    }
   }
 
   if (edges.length > 0) {
-    lines.push("  %% A --> B means A blocks B");
+    lines.push("  %% A --> B means A is blocked by B");
   }
   for (const edge of edges) {
+    lines.push(`  ${toNodeId(edge.from)} --> ${toNodeId(edge.to)}`);
+  }
+
+  if (childIssues.some((issue) => statusClass(issue) === "done")) {
+    lines.push("  classDef done stroke:#2e7d32,stroke-width:3px");
+  }
+  if (childIssues.some((issue) => statusClass(issue) === "inProgress")) {
     lines.push(
-      `  ${toNodeId(edge.from)} -->|${edge.label}| ${toNodeId(edge.to)}`
+      "  classDef inProgress stroke:#2e7d32,stroke-width:3px,stroke-dasharray: 6 4"
     );
   }
 
   return `${lines.join("\n")}\n`;
+}
+
+function toMermaidMarkdown(mermaid) {
+  return `\`\`\`mermaid\n${mermaid}\`\`\`\n`;
+}
+
+async function renderSvgFromMermaid(mermaid) {
+  const mmdc = process.env.MERMAID_CLI || "mmdc";
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "epicdeps-"));
+  const inputPath = path.join(workDir, "graph.mmd");
+  const outputPath = path.join(workDir, "graph.svg");
+
+  try {
+    await fs.writeFile(inputPath, mermaid, "utf8");
+    await execFileAsync(mmdc, ["-i", inputPath, "-o", outputPath], {
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return await fs.readFile(outputPath, "utf8");
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      throw new Error(
+        "Mermaid CLI not found. Install mermaid-cli or set MERMAID_CLI to the mmdc binary."
+      );
+    }
+    const stderr = String(error && error.stderr ? error.stderr : "").trim();
+    throw new Error(stderr || String(error.message || error));
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
 }
 
 async function main() {
@@ -252,7 +344,10 @@ async function main() {
   const authHeader = getAuthHeader();
 
   await fetchIssue(baseUrl, authHeader, args.epicKey);
-  const children = await tryFindEpicChildren(baseUrl, authHeader, args.epicKey);
+  const allChildren = await tryFindEpicChildren(baseUrl, authHeader, args.epicKey);
+  const children = allChildren.filter(
+    (issue) => issue.key !== args.epicKey && !isNotRequired(issue)
+  );
   if (children.length === 0) {
     throw new Error(
       `No child issues found for epic ${args.epicKey}. Check permissions or JQL support.`
@@ -262,14 +357,22 @@ async function main() {
   children.sort((a, b) => a.key.localeCompare(b.key));
   const edges = buildDependencyEdges(children);
   const mermaid = toMermaid(args.epicKey, children, edges);
+  let output;
+  if (args.format === "svg") {
+    output = await renderSvgFromMermaid(mermaid);
+  } else if (args.format === "mermaid") {
+    output = mermaid;
+  } else {
+    output = toMermaidMarkdown(mermaid);
+  }
 
   if (args.output) {
-    await fs.writeFile(args.output, mermaid, "utf8");
-    console.error(`Wrote Mermaid diagram to ${args.output}`);
+    await fs.writeFile(args.output, output, "utf8");
+    console.error(`Wrote ${args.format} output to ${args.output}`);
     return;
   }
 
-  process.stdout.write(mermaid);
+  process.stdout.write(output);
 }
 
 main().catch((error) => {
