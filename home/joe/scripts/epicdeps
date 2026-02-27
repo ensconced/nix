@@ -1,0 +1,278 @@
+#!/usr/bin/env node
+/**
+ * epicdeps
+ *
+ * Generate a Mermaid dependency graph for child tickets in a Jira epic.
+ *
+ * Usage:
+ *   epicdeps EPIC-123
+ *   epicdeps EPIC-123 --output epic-deps.mmd
+ *
+ * Jira instance:
+ *   Defaults to https://elliptic.atlassian.net
+ *   Override with JIRA_BASE_URL if needed.
+ *
+ * Auth:
+ *   Preferred:
+ *     JIRA_EMAIL=you@company.com
+ *     JIRA_TOKEN=atlassian_api_token
+ */
+
+"use strict";
+
+const fs = require("node:fs/promises");
+const DEFAULT_JIRA_BASE_URL = "https://elliptic.atlassian.net";
+
+function parseArgs(argv) {
+  const args = {
+    epicKey: null,
+    output: null,
+    help: false,
+  };
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "-h" || arg === "--help") {
+      args.help = true;
+      continue;
+    }
+    if (arg === "-o" || arg === "--output") {
+      const next = argv[i + 1];
+      if (!next) {
+        throw new Error("Missing value for --output");
+      }
+      args.output = next;
+      i += 1;
+      continue;
+    }
+    if (!args.epicKey) {
+      args.epicKey = arg;
+      continue;
+    }
+    throw new Error(`Unexpected argument: ${arg}`);
+  }
+
+  return args;
+}
+
+function usage() {
+  return `Usage:
+  epicdeps <EPIC_KEY> [--output <file>]
+
+Jira instance:
+  Default: ${DEFAULT_JIRA_BASE_URL}
+  Optional override: JIRA_BASE_URL
+
+Authentication (choose one):
+  1) JIRA_EMAIL + JIRA_TOKEN      (Atlassian API token via Basic auth)
+  2) JIRA_TOKEN                   Used as Bearer token if JIRA_EMAIL is not set
+`;
+}
+
+function getAuthHeader() {
+  const token = process.env.JIRA_TOKEN;
+  const email = process.env.JIRA_EMAIL;
+  if (!token) {
+    throw new Error("Missing Jira auth. Set JIRA_TOKEN.");
+  }
+
+  if (email) {
+    const basic = Buffer.from(`${email}:${token}`, "utf8").toString("base64");
+    return `Basic ${basic}`;
+  }
+
+  return `Bearer ${token}`;
+}
+
+function normalizeBaseUrl(rawBaseUrl) {
+  const value = rawBaseUrl && rawBaseUrl.trim() ? rawBaseUrl : DEFAULT_JIRA_BASE_URL;
+  return value.replace(/\/+$/, "");
+}
+
+async function jiraRequest(baseUrl, authHeader, path, params = {}) {
+  const url = new URL(`${baseUrl}${path}`);
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, String(value));
+  }
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      Authorization: authHeader,
+    },
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    const detail = text.length > 600 ? `${text.slice(0, 600)}...` : text;
+    throw new Error(
+      `Jira request failed (${response.status} ${response.statusText}) for ${url.pathname}: ${detail}`
+    );
+  }
+
+  return response.json();
+}
+
+async function fetchIssue(baseUrl, authHeader, issueKey) {
+  return jiraRequest(baseUrl, authHeader, `/rest/api/3/issue/${issueKey}`, {
+    fields: "key,summary,issuetype",
+  });
+}
+
+async function searchAllIssues(baseUrl, authHeader, jql, fields) {
+  const all = [];
+  let startAt = 0;
+  const maxResults = 100;
+
+  while (true) {
+    const result = await jiraRequest(baseUrl, authHeader, "/rest/api/3/search", {
+      jql,
+      fields: fields.join(","),
+      startAt,
+      maxResults,
+    });
+
+    const issues = result.issues || [];
+    all.push(...issues);
+    startAt += issues.length;
+
+    if (startAt >= (result.total || 0) || issues.length === 0) {
+      break;
+    }
+  }
+
+  return all;
+}
+
+async function tryFindEpicChildren(baseUrl, authHeader, epicKey) {
+  const fields = ["key", "summary", "issuetype", "issuelinks", "parent"];
+  const queries = [
+    `parentEpic = ${epicKey}`,
+    `"Epic Link" = ${epicKey}`,
+    `parent = ${epicKey}`,
+  ];
+
+  const byKey = new Map();
+  for (const jql of queries) {
+    try {
+      const issues = await searchAllIssues(baseUrl, authHeader, jql, fields);
+      for (const issue of issues) {
+        byKey.set(issue.key, issue);
+      }
+    } catch (error) {
+      const message = String(error.message || "");
+      // Some Jira instances don't support every epic-related JQL variant.
+      if (
+        message.includes("Jira request failed (400") ||
+        message.toLowerCase().includes("field")
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return Array.from(byKey.values());
+}
+
+function toNodeId(issueKey) {
+  return `I_${issueKey.replace(/[^A-Za-z0-9_]/g, "_")}`;
+}
+
+function sanitizeLabel(text) {
+  return String(text || "")
+    .replace(/"/g, '\\"')
+    .replace(/\r?\n/g, " ")
+    .trim();
+}
+
+function buildDependencyEdges(childIssues) {
+  const childKeys = new Set(childIssues.map((issue) => issue.key));
+  const seen = new Set();
+  const edges = [];
+
+  for (const issue of childIssues) {
+    const current = issue.key;
+    const links = issue.fields?.issuelinks || [];
+    for (const link of links) {
+      const outwardIssue = link.outwardIssue?.key;
+      if (outwardIssue && childKeys.has(outwardIssue)) {
+        const id = `${current}->${outwardIssue}`;
+        if (!seen.has(id)) {
+          seen.add(id);
+          edges.push({ from: current, to: outwardIssue, label: "blocks" });
+        }
+      }
+
+      const inwardIssue = link.inwardIssue?.key;
+      if (inwardIssue && childKeys.has(inwardIssue)) {
+        const id = `${inwardIssue}->${current}`;
+        if (!seen.has(id)) {
+          seen.add(id);
+          edges.push({ from: inwardIssue, to: current, label: "blocks" });
+        }
+      }
+    }
+  }
+
+  return edges;
+}
+
+function toMermaid(epicKey, childIssues, edges) {
+  const lines = [];
+  lines.push("graph TD");
+  lines.push(`  %% Epic ${epicKey} child dependency map`);
+
+  for (const issue of childIssues) {
+    const nodeId = toNodeId(issue.key);
+    const summary = sanitizeLabel(issue.fields?.summary || "");
+    lines.push(`  ${nodeId}["${issue.key}: ${summary}"]`);
+  }
+
+  if (edges.length > 0) {
+    lines.push("  %% A --> B means A blocks B");
+  }
+  for (const edge of edges) {
+    lines.push(
+      `  ${toNodeId(edge.from)} -->|${edge.label}| ${toNodeId(edge.to)}`
+    );
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help || !args.epicKey) {
+    console.log(usage());
+    process.exit(args.help ? 0 : 1);
+  }
+
+  const baseUrl = normalizeBaseUrl(process.env.JIRA_BASE_URL);
+  const authHeader = getAuthHeader();
+
+  await fetchIssue(baseUrl, authHeader, args.epicKey);
+  const children = await tryFindEpicChildren(baseUrl, authHeader, args.epicKey);
+  if (children.length === 0) {
+    throw new Error(
+      `No child issues found for epic ${args.epicKey}. Check permissions or JQL support.`
+    );
+  }
+
+  children.sort((a, b) => a.key.localeCompare(b.key));
+  const edges = buildDependencyEdges(children);
+  const mermaid = toMermaid(args.epicKey, children, edges);
+
+  if (args.output) {
+    await fs.writeFile(args.output, mermaid, "utf8");
+    console.error(`Wrote Mermaid diagram to ${args.output}`);
+    return;
+  }
+
+  process.stdout.write(mermaid);
+}
+
+main().catch((error) => {
+  console.error(`Error: ${error.message}`);
+  process.exit(1);
+});

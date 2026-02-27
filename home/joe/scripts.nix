@@ -66,4 +66,8 @@
     vi todos.md
   '')
   (pkgs.writeShellScriptBin "ecrpull" (builtins.readFile ./scripts/ecrpull))
+  (pkgs.writeShellScriptBin "epicdeps" ''
+    set -eu
+    exec ${pkgsUnstable.nodejs_25}/bin/node ${./scripts/epicdeps} "$@"
+  '')
 ]
