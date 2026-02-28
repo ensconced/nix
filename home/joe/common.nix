@@ -41,6 +41,11 @@
   home.sessionVariables = {
     RIPGREP_CONFIG_PATH = "${config.home.homeDirectory}/.config/ripgrep/config";
     SOPS_AGE_KEY_FILE = "${config.home.homeDirectory}/.config/sops/age/keys.txt";
+    PGSSLROOTCERT = "${config.home.homeDirectory}/.postgres-root-certs.crl";
+  };
+  home.file.postgres-root-certs = {
+    text = "${builtins.readFile ./eu-west-1-bundle.pem}";
+    target = "./.postgres-root-certs.crl";
   };
   home.file.ripgrep-config = {
     text = ''

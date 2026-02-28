@@ -59,7 +59,6 @@ in
     # Here we merge two config files. The first one is NOT managed by nix, and will be written to by kubeconfig when e.g. changing contexts.
     # The second one is managed by nix and will be readonly.
     KUBECONFIG = "${homeDirectory}/.kube/config:/Users/joe.barnett/.kube/base-config";
-    PGSSLROOTCERT = "${homeDirectory}/.postgres-root-certs.crl";
   };
   sops = {
     age.sshKeyPaths = [ "${homeDirectory}/.ssh/id_ed25519" ];
@@ -72,10 +71,6 @@ in
     source = ./repoconf;
     target = "./.repoconf";
     force = true;
-  };
-  home.file.postgres-root-certs = {
-    text = "${builtins.readFile ./eu-west-1-bundle.pem}";
-    target = "./.postgres-root-certs.crl";
   };
   home.file.zshrc = {
     text = "# empty zshrc - mostly for cursors benefit - we have a rule in elliptic-frontend that tells it to source this";
